@@ -60,7 +60,7 @@ def message(type, err_code, text):
 # - Icon (a small image icon for the post )
 # - Author (Name of the person who wrote the post)
 # - Featured (featured image for social media puposes )
-blogish_hdr_keys = ['Title', 'Date', 'Author', 'Icon', 'Featured', "Description", "Image"]
+blogish_hdr_keys = ['Title', 'Date', 'Author', 'Icon', 'Featured', "Description", "Image", "Source", "External_Link", "Robots"]
 
 def get_sources(incl_dirs):
     result = []
@@ -85,11 +85,19 @@ def load_file(f):
     f.close()
     return result
 
+first_para_re = r'<p>([\s\S]*?)<\/p>'
+first_para_re = re.compile(first_para_re, flags=re.MULTILINE)
+def get_first_para(blog_str, blog_file, out_dir):
+    result = first_para_re.search(blog_str)
+    if result:
+        return result.group(1)
+
+    return ""
 
 header_re = r'/\*([\s\S]*?)\*/\s*'
 header_re = re.compile(header_re, flags=re.MULTILINE)
 
-def get_headers(blog_str, blog_file):
+def get_headers(blog_str, blog_file, out_dir):
     headers = header_re.findall(blog_str)
     if len(headers) == 0:
         message("error","no-header","Could not find header section in '%s'. Is this a valid blogish markdown file?" % blog_file)
@@ -114,11 +122,30 @@ def get_headers(blog_str, blog_file):
             val = kvp[1].strip()
 
         if key not in blogish_hdr_keys:
-            message("warn", "invalid-key", "Invalid key '%s', expecting one of the following %s" % (key,blogish_hdr_keys))
+            message("warn", "invalid-key", "Invalid key '%s' in file '%s', expecting one of the following %s" % (key,blog_file,blogish_hdr_keys))
 
-        message("debug","","Adding key/value '%s' --> '%s'" % (key,val))
-        result[key] = val
+        if key == "Source" or key == "Author":
+            message("debug","","Adding key/value '%s' --> '%s'" % ("Type",key))
+            result["Type"] = key.strip()
+            message("debug","","Adding key/value '%s' --> '%s'" % ("Writer",val))
+            result["Writer"] = val.strip()
+        elif key == "External_Link":
+            result["Link"] = val.strip()
+            message("debug","","Adding key/value '%s' --> '%s'" % ("Link",val))
+        else:
+            message("debug","","Adding key/value '%s' --> '%s'" % (key,val))
+            result[key] = val.strip()
 
+    page_name = os.path.basename(make_html_outpath(out_dir, blog_file))
+    if "Link" not in result:
+        result["Link"] = "$${blog_url}/" + page_name + "$${ext}"
+
+    if "Description" not in result:
+        result["Description"] = result["Title"]
+
+
+
+    result["Content"] = "$$>" + page_name
     return result
 
 def rem_headers(blog_str):
@@ -129,42 +156,75 @@ def make_html_outpath(out_dir, blog_file):
     base = os.path.basename(blog_file)
     new_name = base.replace(".md",".html")
     result = os.path.join(out_dir, new_name)
-    message("debug","","Formed new output file path '%s'" % result)
+    message("debug","","Formed new html output file path '%s'" % result)
+    return result
+
+def make_config_outpath(out_dir, blog_file):
+    base = os.path.basename(blog_file)
+    new_name = base.replace(".md",".json")
+    result = os.path.join(out_dir, new_name)
+    message("debug","","Formed new config output file path '%s'" % result)
     return result
 
 
+
 def write_out(result, args_out):
-    if args.out is None:
-        out = sys.stdout
-    else:
-        message("debug", None, "Saving output...")
-        message("debug", None, "  Writing to '%s'..." % args_out )
-        out = open(args_out,"w")
+    message("debug", None, "Saving output...")
+    message("debug", None, "  Writing to '%s'..." % args_out )
+    out = open(args_out,"w")
     out.write(result.encode("utf-8"))
     out.close()
     return
 
 
 
-def run_blogish(incl_dirs, out_dir):
+def run_blogish(incl_dirs, out_dir, out_json, per_page):
     blog_files = get_sources(incl_dirs)
     if blog_files is None:
         message("error","no-source","No source files found in '%s'" % incl_dirs)
 
-    headers_map = {}
+    pages_list = []
     for blog_file in blog_files:
         message("debug","","Working on blog file '%s'" % blog_file)
         blog_str  = load_file(blog_file)
-        hdr_map   = get_headers(blog_str,blog_file)
+        hdr_map   = get_headers(blog_str,blog_file,out_dir)
         blog_str  = rem_headers(blog_str)
         blog_html = markdown2.markdown(blog_str, extras=['fenced-code-blocks','cuddled-lists','header-ids','tables'])
+
+        if "Date" not in hdr_map:
+            message("warn","no-date","Blog file '%s' does not have a date" % blog_file)
+            continue
+
         html_path = make_html_outpath(out_dir, blog_file)
         write_out(blog_html, html_path )
-        headers_map[blog_file] = hdr_map
 
-    #print headers_map
+        pages_list.append(hdr_map)
+
+        config_path = make_config_outpath(out_dir, blog_file)
+        config = {"blog_page": hdr_map}
+        config_str = json.dumps(config, indent=2)
+        write_out(config_str,config_path)
 
 
+    pages_list = sorted(pages_list, key=lambda k: k['Date'], reverse=True)
+
+    idx = -1
+    page_group_max = per_page
+
+    json_out = {}
+    json_out["blog_pages"] = []
+    page_group = []
+    for page in pages_list:
+        idx += 1
+        if idx > page_group_max:
+            json_out["blog_pages"].append({"page_group":page_group})
+            page_group = []
+            idx = -1
+        page_group.append(page)
+
+
+    out_json_str = json.dumps(json_out, indent=2)
+    write_out(out_json_str,out_json)
 
 
 
@@ -182,8 +242,12 @@ parser.add_argument(dest='incl_dirs', action='append',  default=[],
                     help='Direcotry to look in for source markdown files')
 parser.add_argument('-W', dest='warnings', action='append', default=[],
                     help='Configure warnings. -Wall, -Werror')
-parser.add_argument('-o', dest='out', action='store',
+parser.add_argument('-o', dest='out_dir', action='store',
                     help='Output directory')
+parser.add_argument('-j', dest='out_json', action='store',default=None,
+                    help='Output index JSON')
+parser.add_argument('-P', dest='per_page', action='store', default=5,
+                    help='Items per output page')
 parser.add_argument('-v', "--version", dest='version', action='store_const', const=1,
                     help='Prints the current version number')
 parser.add_argument('-V', "--verbose", dest='verbose', action='store_const', const=1,
@@ -202,4 +266,4 @@ for arg in sys.argv:
 
 args = parser.parse_args()
 
-run_blogish(args.incl_dirs,args.out)
+run_blogish(args.incl_dirs,args.out_dir, args.out_json, args.per_page)
