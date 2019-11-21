@@ -88,7 +88,7 @@ def load_file(f):
 
 first_para_re = r'<p>([\s\S]*?)<\/p>'
 first_para_re = re.compile(first_para_re, flags=re.MULTILINE)
-def get_first_para(blog_str, blog_file, out_dir):
+def get_first_para(blog_str):
     result = first_para_re.search(blog_str)
     if result:
         return result.group(1)
@@ -138,11 +138,9 @@ def get_headers(blog_str, blog_file, out_dir):
             result[key] = val.strip()
 
     page_name = os.path.basename(make_html_outpath(out_dir, blog_file))
-    if "Link" not in result:
-        result["Link"] = "$${blog_url}/" + page_name + "$${ext}"
 
-    if "Description" not in result:
-        result["Description"] = ""
+    if "Link" not in result:
+        result["Link"] = "$${blog_path_url}/" + os.path.splitext(page_name)[0] + "$${ext}"
 
     result["Content"] = "$$>" + page_name
     return result
@@ -181,10 +179,7 @@ def make_config_outpath(out_dir, blog_file):
 def make_index_outpath(out_dir, n):
     path = os.path.join(out_dir, "index")
     makedirs(path)
-    if n == 0:
-        f = "index.json"
-    else:
-        f = "page%i.json" % n
+    f = "index%i.json" % n
     result = os.path.join(path, f)
     message("debug","","Formed new JSON index file path '%s'" % result)
     return result
@@ -199,6 +194,7 @@ def write_out(result, args_out):
     return
 
 def run_blogish(incl_dirs, out_dir, blogs_per_index):
+    blogs_per_index = int(blogs_per_index)
     blog_files = get_sources(incl_dirs)
     if blog_files is None:
         message("error","no-source","No source files found in '%s'" % incl_dirs)
@@ -215,13 +211,17 @@ def run_blogish(incl_dirs, out_dir, blogs_per_index):
             message("warn","no-date","Blog file '%s' does not have a date" % blog_file)
             continue
 
+        if "Description" not in hdr_map:
+            hdr_map["Description"] = "" # get_first_para(blog_h)
+
+
         html_path = make_html_outpath(out_dir, blog_file)
         write_out(blog_html, html_path )
 
         blog_pages_list.append(hdr_map)
 
         config_path = make_config_outpath(out_dir, blog_file)
-        config = {"blog_page": hdr_map}
+        config = hdr_map
         config_str = json.dumps(config, indent=2)
         write_out(config_str,config_path)
 
@@ -229,7 +229,7 @@ def run_blogish(incl_dirs, out_dir, blogs_per_index):
 
     blog_idx = 0
     blog_page_group = []
-    index_page_num = 0
+    index_page_num = 1
     blog_pages_total = len(blog_pages_list) * 1.0
     index_page_tot = int(math.ceil(blog_pages_total/blogs_per_index))
     message("debug","","There are %i blog pages in total, with %i per index page, there are %i index pages" % (blog_pages_total, blogs_per_index, index_page_tot))
@@ -237,10 +237,18 @@ def run_blogish(incl_dirs, out_dir, blogs_per_index):
     for blog_page in blog_pages_list:
         if blog_idx >= blogs_per_index:
             json_out = {
-                "page_num"  : "%i" % index_page_num,
-                "page_tot"  : "%i" % index_page_tot,
-                "page_group": blog_page_group
+                "page_num"   : "%i" % index_page_num,
+                "page_tot"   : "%i" % index_page_tot,
+                "page_group" : blog_page_group,
+                "page_next"  : "%i" % (index_page_num + 1)
             }
+
+            if index_page_num == index_page_tot:
+                del json_out["page_next"]
+
+            if index_page_num > 1:
+                json_out["page_prev"] = "%i" % (index_page_num - 1)
+
             out_index_json = json.dumps(json_out, indent=2)
             out_index_file = make_index_outpath(out_dir,index_page_num)
             write_out(out_index_json,out_index_file)
@@ -251,9 +259,21 @@ def run_blogish(incl_dirs, out_dir, blogs_per_index):
         blog_page_group.append(blog_page)
         blog_idx += 1
 
-    out_index_json = json.dumps(json_out, indent=2)
-    out_index_file = make_index_outpath(out_dir,index_page_num)
-    write_out(out_index_json,out_index_file)
+    #Check if there are any remaining and output
+    if  (blog_pages_total % blogs_per_index) != 0:
+        json_out = {
+            "page_num"   : "%i" % index_page_num,
+            "page_tot"   : "%i" % index_page_tot,
+            "page_group" : blog_page_group,
+
+        }
+
+        if index_page_num > 1:
+            json_out["page_prev"] = "%i" % (index_page_num - 1)
+
+        out_index_json = json.dumps(json_out, indent=2)
+        out_index_file = make_index_outpath(out_dir,index_page_num)
+        write_out(out_index_json,out_index_file)
 
 
 
@@ -277,7 +297,7 @@ parser.add_argument('-W', dest='warnings', action='append', default=[],
                     help='Configure warnings. -Wall, -Werror')
 parser.add_argument('-o', dest='out_dir', action='store',
                     help='Output directory')
-parser.add_argument('-P', dest='per_page', action='store', default=5,
+parser.add_argument('-P', dest='per_page', action='store', default="5",
                     help='Items per output page')
 parser.add_argument('-v', "--version", dest='version', action='store_const', const=1,
                     help='Prints the current version number')
